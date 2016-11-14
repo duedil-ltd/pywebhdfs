@@ -1,5 +1,6 @@
 from six.moves import http_client
 import unittest
+import types
 
 from mock import MagicMock
 from mock import patch
@@ -161,6 +162,14 @@ class WhenTestingOpenOperation(unittest.TestCase):
         with patch('pywebhdfs.webhdfs.requests', self.requests):
             result = self.webhdfs.read_file(self.path)
         self.assertEqual(result, self.file_data)
+
+    def test_stream_returns_generator(self):
+
+        self.response.status_code = http_client.OK
+        self.requests.get.return_value = self.response
+        with patch('pywebhdfs.webhdfs.requests', self.requests):
+            result = self.webhdfs.stream_file(self.path)
+        self.assertIsInstance(result, types.GeneratorType)
 
 
 class WhenTestingMkdirOperation(unittest.TestCase):
