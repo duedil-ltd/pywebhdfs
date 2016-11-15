@@ -17,16 +17,20 @@ class WhenTestingPyWebHdfsConstructor(unittest.TestCase):
         self.assertEqual('localhost', webhdfs.host)
         self.assertEqual('50070', webhdfs.port)
         self.assertIsNone(webhdfs.user_name)
+        self.assertEqual(3, webhdfs.max_tries)
 
     def test_init_args_provided(self):
         host = '127.0.0.1'
         port = '50075'
         user_name = 'myUser'
+        max_tries = 5
 
-        webhdfs = PyWebHdfsClient(host=host, port=port, user_name=user_name)
+        webhdfs = PyWebHdfsClient(host=host, port=port, user_name=user_name,
+                                  max_tries=max_tries)
         self.assertEqual(host, webhdfs.host)
         self.assertEqual(port, webhdfs.port)
         self.assertEqual(user_name, webhdfs.user_name)
+        self.assertEqual(max_tries, webhdfs.max_tries)
 
     def test_init_path_to_hosts_provided(self):
         path_to_hosts = [('.*', ['localhost'])]

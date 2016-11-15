@@ -20,7 +20,7 @@ class PyWebHdfsClient(object):
     """
 
     def __init__(self, host='localhost', port='50070', user_name=None,
-                 path_to_hosts=None, timeout=None,
+                 path_to_hosts=None, max_tries=3, timeout=None,
                  base_uri_pattern="http://{host}:{port}/webhdfs/v1/",
                  request_extra_opts={}):
         """
@@ -30,6 +30,7 @@ class PyWebHdfsClient(object):
         :param port: the port number for WebHDFS on the namenode
         :param user_name: WebHDFS user.name used for authentication
         :param path_to_hosts: mapping paths to hostnames for federation
+        :param max_tries: maximum number of retries
         :param timeout: timeout for the underlying HTTP request
         :param base_uri_pattern: format string for base URI
         :param request_extra_opts: dictionary of extra options to pass
@@ -48,6 +49,7 @@ class PyWebHdfsClient(object):
         self.host = host
         self.port = port
         self.user_name = user_name
+        self.max_tries = int(max_tries)
         self.timeout = timeout
         self.session = requests.Session()
         self.path_to_hosts = path_to_hosts
