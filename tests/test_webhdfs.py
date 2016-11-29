@@ -737,6 +737,64 @@ class WhenTestingCreateUri(unittest.TestCase):
         self.assertEqual(uri, result)
 
 
+class WhenTestingResolveHost(unittest.TestCase):
+
+    def setUp(self):
+        self.host = 'hostname'
+        self.port = '00000'
+        self.user_name = 'username'
+        self.path = 'user/hdfs'
+        self.timeout = None
+        self.webhdfs = PyWebHdfsClient(host=self.host, port=self.port,
+                                       user_name=self.user_name)
+
+        self.session = requests.Session()
+        self.data = '01011010'
+        self.headers = {'content-type': 'application/octet-stream'}
+
+        self.response = MagicMock()
+        self.response.status_code = http_client.TEMPORARY_REDIRECT
+        self.requests = MagicMock(return_value=self.response)
+
+    def test_method_is_called_with_correct_arguments(self):
+        uri = self.webhdfs._create_uri(self.path, 'CREATE').format(host=self.host)
+        with patch('requests.sessions.Session.put', self.requests):
+            result = self.webhdfs._resolve_host(
+                self.session.put, True, self.path, 'CREATE')
+        self.assertTrue(result)
+        self.assertEqual(len(self.requests.mock_calls), 1)
+        self.requests.assert_called_with(uri, allow_redirects=True, timeout=self.timeout)
+
+    def test_retries_are_made_max_tries(self):
+        self.requests.side_effect = [
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            self.response]
+        with patch('requests.sessions.Session.put', self.requests):
+            result = self.webhdfs._resolve_host(
+                self.session.put, True, self.path, 'CREATE')
+        self.assertTrue(result)
+        self.assertEqual(len(self.requests.mock_calls), 3)
+
+    def test_retries_are_made_at_most_max_tries(self):
+        self.requests.side_effect = [
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            self.response]
+        with self.assertRaises(requests.exceptions.ConnectionError):
+            with patch('requests.sessions.Session.put', self.requests):
+                self.webhdfs._resolve_host(
+                    self.session.put, True, self.path, 'CREATE')
+
+    def test_non_requests_exceptions_bubble_up(self):
+        self.requests.side_effect = errors.FileNotFound
+        with self.assertRaises(errors.FileNotFound):
+            with patch('requests.sessions.Session.put', self.requests):
+                self.webhdfs._resolve_host(
+                    self.session.put, True, self.path, 'CREATE')
+
+
 class WhenTestingRaiseExceptions(unittest.TestCase):
 
     def test_400_raises_bad_request(self):

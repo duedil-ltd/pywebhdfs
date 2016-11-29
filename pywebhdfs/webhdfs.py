@@ -1,5 +1,6 @@
 from six.moves import http_client
 import re
+from time import sleep
 
 import requests
 try:
@@ -207,6 +208,8 @@ class PyWebHdfsClient(object):
 
         optional_args = kwargs
 
+        # The retry logic added to self._resolve_host is enough in this case,
+        # as we are following redirects.
         response = self._resolve_host(self.session.get, True,
                                       path, operations.OPEN,
                                       **optional_args)
@@ -736,18 +739,30 @@ class PyWebHdfsClient(object):
         """
         uri_without_host = self._create_uri(path, operation, **kwargs)
         hosts = self._resolve_federation(path)
-        for host in hosts:
-            uri = uri_without_host.format(host=host)
-            try:
-                response = req_func(uri, allow_redirects=allow_redirect,
-                                    timeout=self.timeout,
-                                    **self.request_extra_opts)
 
-                if not _is_standby_exception(response):
-                    _move_active_host_to_head(hosts, host)
-                    return response
-            except requests.exceptions.RequestException:
-                continue
+        for host in hosts:
+            tries = 0
+            uri = uri_without_host.format(host=host)
+            while tries < self.max_tries:
+                try:
+                    # When allow_redirects is True, control flow doesn't leave
+                    # this branch, so a failure will mean a new request to the
+                    # namenode, as required.
+                    response = req_func(uri, allow_redirects=allow_redirect,
+                                        timeout=self.timeout,
+                                        **self.request_extra_opts)
+                    last_error = None
+                    if not _is_standby_exception(response):
+                        _move_active_host_to_head(hosts, host)
+                        return response
+                except requests.exceptions.RequestException, e:
+                    last_error = e
+                    tries += 1
+                    sleep(2 ** tries)
+
+        if last_error:
+            raise last_error
+
         raise errors.ActiveHostNotFound(msg="Could not find active host")
 
 
