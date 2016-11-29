@@ -1,8 +1,21 @@
 CHANGES
 =======
 
+* Added retry logic to create and append
+* Added retry logic to _resolve_hosts
+* Make the tests great again
+* Added max_tries parameter to webhdfs client
+* removed unnecssary comment
+* PEP8
+* implemented streaming file
+* Check whether configured namenodes are up before continuing with CRUD operations
+* Send all requests through a Session instance
+
+0.4.1
+-----
+
 * update AUTHORS
-* Restored host and port fields in PyWebHDFSClient. They are not used internally anymore, but are a visible part of the API, so cannot be removed
+* Restored host and port fields in PyWebHDFSClient.  They are not used internally anymore, but are a visible part of the API, so cannot be removed
 * Fixed error in default value of request_extra_opts
 * Added support for general base URIs and extra options for REST requests
 * Set default timeout to None instead of 0
@@ -50,7 +63,7 @@ CHANGES
 * Ensure destination path contains a leading slash
 * URL encode query parameters
 * Support HDFS paths with unicode characters
-* Bump version after last pull request
+* Bump version after last  pull request
 * version bumo, authors file, comments
 * fixed unittest code
 * I fixed performance of operation to large file
