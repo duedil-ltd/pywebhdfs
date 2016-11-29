@@ -88,6 +88,38 @@ class WhenTestingCreateOperation(unittest.TestCase):
         self.requests.assert_called_with(
             self.location, headers=self.expected_headers, data=self.file_data)
 
+    def test_create_handles_failures(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.CREATED
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.put', self.requests):
+            result = self.webhdfs.create_file(self.path, self.file_data)
+        self.assertTrue(result)
+        self.requests.assert_called_with(
+            self.location, headers=self.expected_headers, data=self.file_data)
+
+    def test_create_retries_at_most_max_tries(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.CREATED
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.put', self.requests):
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                self.webhdfs.create_file(self.path, self.file_data)
+
 
 class WhenTestingAppendOperation(unittest.TestCase):
 
@@ -133,6 +165,36 @@ class WhenTestingAppendOperation(unittest.TestCase):
         with patch('requests.sessions.Session.post', self.requests):
             result = self.webhdfs.append_file(self.path, self.file_data)
         self.assertTrue(result)
+
+    def test_append_handles_failures(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.OK
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.post', self.requests):
+            result = self.webhdfs.append_file(self.path, self.file_data)
+        self.assertTrue(result)
+
+    def test_append_retries_at_most_max_tries(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.OK
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.post', self.requests):
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                self.webhdfs.append_file(self.path, self.file_data)
 
 
 class WhenTestingOpenOperation(unittest.TestCase):

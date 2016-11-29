@@ -94,34 +94,45 @@ class PyWebHdfsClient(object):
         >>>     hdfs.create_file(hdfs_path, data=file_data)
 
 
-        Note: The create_file function does not follow automatic redirects but
+        Note: The create_file function does not follows automatic redirects but
         instead uses a two step call to the API as required in the
         WebHDFS documentation
         """
 
         # make the initial CREATE call to the HDFS namenode
         optional_args = kwargs
+        tries = 0
 
-        init_response = self._resolve_host(self.session.put, False,
-                                           path, operations.CREATE,
-                                           **optional_args)
-        if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
-            _raise_pywebhdfs_exception(
-                init_response.status_code, init_response.content)
+        while tries < self.max_tries:
+            init_response = self._resolve_host(self.session.put, False,
+                                               path, operations.CREATE,
+                                               **optional_args)
+            if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
+                _raise_pywebhdfs_exception(
+                    init_response.status_code, init_response.content)
 
-        # Get the address provided in the location header of the
-        # initial response from the namenode and make the CREATE request
-        # to the datanode
-        uri = init_response.headers['location']
-        response = self.session.put(
-            uri, data=file_data,
-            headers={'content-type': 'application/octet-stream'},
-            **self.request_extra_opts)
+            uri = init_response.headers['location']
+            # Get the address provided in the location header of the
+            # initial response from the namenode and make the CREATE request
+            # to the datanode. If there is a failure here, we should make a new
+            # request to the namenode.
 
-        if not response.status_code == http_client.CREATED:
-            _raise_pywebhdfs_exception(response.status_code, response.content)
+            try:
+                response = self.session.put(
+                    uri, data=file_data,
+                    headers={'content-type': 'application/octet-stream'},
+                    **self.request_extra_opts)
 
-        return True
+                if not response.status_code == http_client.CREATED:
+                    _raise_pywebhdfs_exception(response.status_code, response.content)
+
+                return True
+            except requests.exceptions.RequestException, e:
+                tries += 1
+                last_error = e
+                sleep(2 ** tries)
+
+        raise last_error
 
     def append_file(self, path, file_data, **kwargs):
         """
@@ -158,28 +169,39 @@ class PyWebHdfsClient(object):
 
         # make the initial APPEND call to the HDFS namenode
         optional_args = kwargs
+        tries = 0
 
-        init_response = self._resolve_host(self.session.post, False,
-                                           path, operations.APPEND,
-                                           **optional_args)
-        if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
-            _raise_pywebhdfs_exception(
-                init_response.status_code, init_response.content)
+        while tries < self.max_tries:
+            init_response = self._resolve_host(self.session.post, False,
+                                               path, operations.APPEND,
+                                               **optional_args)
+            if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
+                _raise_pywebhdfs_exception(
+                    init_response.status_code, init_response.content)
 
-        # Get the address provided in the location header of the
-        # initial response from the namenode and make the APPEND request
-        # to the datanode
-        uri = init_response.headers['location']
-        response = self.session.post(
-            uri, data=file_data,
-            headers={'content-type': 'application/octet-stream'},
-            **self.request_extra_opts
-        )
+            uri = init_response.headers['location']
 
-        if not response.status_code == http_client.OK:
-            _raise_pywebhdfs_exception(response.status_code, response.content)
+            # Get the address provided in the location header of the
+            # initial response from the namenode and make the APPEND request
+            # to the datanode. If there is a failure here, we should make a new
+            # request to the namenode.
+            try:
+                response = self.session.post(
+                    uri, data=file_data,
+                    headers={'content-type': 'application/octet-stream'},
+                    **self.request_extra_opts
+                )
 
-        return True
+                if not response.status_code == http_client.OK:
+                    _raise_pywebhdfs_exception(response.status_code, response.content)
+
+                return True
+            except requests.exceptions.RequestException, e:
+                tries += 1
+                last_error = e
+                sleep(2 ** tries)
+
+        raise last_error
 
     def read_file(self, path, **kwargs):
         """
