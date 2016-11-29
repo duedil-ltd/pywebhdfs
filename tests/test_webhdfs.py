@@ -1,5 +1,8 @@
 from six.moves import http_client
 import unittest
+import types
+
+import requests
 
 from mock import MagicMock
 from mock import patch
@@ -16,16 +19,20 @@ class WhenTestingPyWebHdfsConstructor(unittest.TestCase):
         self.assertEqual('localhost', webhdfs.host)
         self.assertEqual('50070', webhdfs.port)
         self.assertIsNone(webhdfs.user_name)
+        self.assertEqual(3, webhdfs.max_tries)
 
     def test_init_args_provided(self):
         host = '127.0.0.1'
         port = '50075'
         user_name = 'myUser'
+        max_tries = 5
 
-        webhdfs = PyWebHdfsClient(host=host, port=port, user_name=user_name)
+        webhdfs = PyWebHdfsClient(host=host, port=port, user_name=user_name,
+                                  max_tries=max_tries)
         self.assertEqual(host, webhdfs.host)
         self.assertEqual(port, webhdfs.port)
         self.assertEqual(user_name, webhdfs.user_name)
+        self.assertEqual(max_tries, webhdfs.max_tries)
 
     def test_init_path_to_hosts_provided(self):
         path_to_hosts = [('.*', ['localhost'])]
@@ -56,8 +63,8 @@ class WhenTestingCreateOperation(unittest.TestCase):
 
         self.init_response.status_code = http_client.BAD_REQUEST
         self.response.status_code = http_client.CREATED
-        self.requests.put.side_effect = [self.init_response, self.response]
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.side_effect = [self.init_response, self.response]
+        with patch('requests.sessions.Session.put', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.create_file(self.path, self.file_data)
 
@@ -65,8 +72,8 @@ class WhenTestingCreateOperation(unittest.TestCase):
 
         self.init_response.status_code = http_client.TEMPORARY_REDIRECT
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.put.side_effect = [self.init_response, self.response]
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.side_effect = [self.init_response, self.response]
+        with patch('requests.sessions.Session.put', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.create_file(self.path, self.file_data)
 
@@ -74,14 +81,44 @@ class WhenTestingCreateOperation(unittest.TestCase):
 
         self.init_response.status_code = http_client.TEMPORARY_REDIRECT
         self.response.status_code = http_client.CREATED
-        self.put_method = MagicMock(
-            side_effect=[self.init_response, self.response])
-        self.requests.put = self.put_method
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.side_effect = [self.init_response, self.response]
+        with patch('requests.sessions.Session.put', self.requests):
             result = self.webhdfs.create_file(self.path, self.file_data)
         self.assertTrue(result)
-        self.put_method.assert_called_with(
+        self.requests.assert_called_with(
             self.location, headers=self.expected_headers, data=self.file_data)
+
+    def test_create_handles_failures(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.CREATED
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.put', self.requests):
+            result = self.webhdfs.create_file(self.path, self.file_data)
+        self.assertTrue(result)
+        self.requests.assert_called_with(
+            self.location, headers=self.expected_headers, data=self.file_data)
+
+    def test_create_retries_at_most_max_tries(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.CREATED
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.put', self.requests):
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                self.webhdfs.create_file(self.path, self.file_data)
 
 
 class WhenTestingAppendOperation(unittest.TestCase):
@@ -106,8 +143,8 @@ class WhenTestingAppendOperation(unittest.TestCase):
 
         self.init_response.status_code = http_client.BAD_REQUEST
         self.response.status_code = http_client.OK
-        self.requests.post.side_effect = [self.init_response, self.response]
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.side_effect = [self.init_response, self.response]
+        with patch('requests.sessions.Session.post', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.append_file(self.path, self.file_data)
 
@@ -115,8 +152,8 @@ class WhenTestingAppendOperation(unittest.TestCase):
 
         self.init_response.status_code = http_client.TEMPORARY_REDIRECT
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.post.side_effect = [self.init_response, self.response]
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.side_effect = [self.init_response, self.response]
+        with patch('requests.sessions.Session.post', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.append_file(self.path, self.file_data)
 
@@ -124,10 +161,40 @@ class WhenTestingAppendOperation(unittest.TestCase):
 
         self.init_response.status_code = http_client.TEMPORARY_REDIRECT
         self.response.status_code = http_client.OK
-        self.requests.post.side_effect = [self.init_response, self.response]
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.side_effect = [self.init_response, self.response]
+        with patch('requests.sessions.Session.post', self.requests):
             result = self.webhdfs.append_file(self.path, self.file_data)
         self.assertTrue(result)
+
+    def test_append_handles_failures(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.OK
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.post', self.requests):
+            result = self.webhdfs.append_file(self.path, self.file_data)
+        self.assertTrue(result)
+
+    def test_append_retries_at_most_max_tries(self):
+        self.init_response.status_code = http_client.TEMPORARY_REDIRECT
+        self.response.status_code = http_client.OK
+        self.requests.side_effect = [
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            requests.exceptions.ConnectionError,
+            self.init_response,
+            self.response]
+        with patch('requests.sessions.Session.post', self.requests):
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                self.webhdfs.append_file(self.path, self.file_data)
 
 
 class WhenTestingOpenOperation(unittest.TestCase):
@@ -149,18 +216,26 @@ class WhenTestingOpenOperation(unittest.TestCase):
     def test_read_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.read_file(self.path)
 
     def test_read_returns_file(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.read_file(self.path)
         self.assertEqual(result, self.file_data)
+
+    def test_stream_returns_generator(self):
+
+        self.response.status_code = http_client.OK
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
+            result = self.webhdfs.stream_file(self.path)
+        self.assertIsInstance(result, types.GeneratorType)
 
 
 class WhenTestingMkdirOperation(unittest.TestCase):
@@ -180,16 +255,16 @@ class WhenTestingMkdirOperation(unittest.TestCase):
     def test_mkdir_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.make_dir(self.path)
 
     def test_mkdir_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             result = self.webhdfs.make_dir(self.path)
         self.assertTrue(result)
 
@@ -214,16 +289,16 @@ class WhenTestingRenameOperation(unittest.TestCase):
     def test_rename_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.rename_file_dir(self.path, self.new_path)
 
     def test_rename_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             result = self.webhdfs.rename_file_dir(self.path, self.new_path)
         self.assertEqual(result, {"boolean": True})
 
@@ -245,16 +320,16 @@ class WhenTestingDeleteOperation(unittest.TestCase):
     def test_rename_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.delete.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.delete', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.delete_file_dir(self.path)
 
     def test_rename_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.delete.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.delete', self.requests):
             result = self.webhdfs.delete_file_dir(self.path)
         self.assertTrue(result)
 
@@ -291,16 +366,16 @@ class WhenTestingGetFileStatusOperation(unittest.TestCase):
     def test_get_status_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.get_file_dir_status(self.path)
 
     def test_get_status_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.get_file_dir_status(self.path)
 
         for key in result:
@@ -335,16 +410,16 @@ class WhenTestingGetContentSummaryOperation(unittest.TestCase):
     def test_get_status_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.get_content_summary(self.path)
 
     def test_get_status_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.get_content_summary(self.path)
 
         for key in result:
@@ -377,16 +452,16 @@ class WhenTestingGetFileChecksumOperation(unittest.TestCase):
     def test_get_status_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.get_file_checksum(self.path)
 
     def test_get_status_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.get_file_checksum(self.path)
 
         for key in result:
@@ -441,16 +516,16 @@ class WhenTestingListDirOperation(unittest.TestCase):
     def test_get_status_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.list_dir(self.path)
 
     def test_get_status_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.list_dir(self.path)
 
         for key in result:
@@ -489,23 +564,23 @@ class WhenTestingFileExistsOperation(unittest.TestCase):
     def test_exists_throws_exception_for_error(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.exists_file_dir(self.path)
 
     def test_exists_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             self.assertTrue(self.webhdfs.exists_file_dir(self.path))
 
     def test_exists_returns_false(self):
 
         self.response.status_code = http_client.NOT_FOUND
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             self.assertFalse(self.webhdfs.exists_file_dir(self.path))
 
 
@@ -536,16 +611,16 @@ class WhenTestingGetXattrOperation(unittest.TestCase):
     def test_get_xattr_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.get_xattr(self.path, self.xattr)
 
     def test_get_xattr_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.get_xattr(self.path, self.xattr)
 
         for key in result:
@@ -571,16 +646,16 @@ class WhenTestingSetXattrOperation(unittest.TestCase):
     def test_set_xattr_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.set_xattr(self.path, self.xattr, self.value)
 
     def test_set_xattr_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             result = self.webhdfs.set_xattr(self.path, self.xattr, self.value)
 
         self.assertTrue(result)
@@ -588,8 +663,8 @@ class WhenTestingSetXattrOperation(unittest.TestCase):
     def test_set_xattr_replace_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             result = self.webhdfs.set_xattr(
                 self.path, self.xattr, self.value, replace=True)
 
@@ -620,16 +695,16 @@ class WhenTestingListXattrsOperation(unittest.TestCase):
     def test_list_xattrs_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.list_xattrs(self.path)
 
     def test_list_xattrs_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.get.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.get', self.requests):
             result = self.webhdfs.list_xattrs(self.path)
 
         for key in result:
@@ -654,16 +729,16 @@ class WhenTestingDeleteXattrOperation(unittest.TestCase):
     def test_delete_xattr_throws_exception_for_not_ok(self):
 
         self.response.status_code = http_client.BAD_REQUEST
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             with self.assertRaises(errors.PyWebHdfsException):
                 self.webhdfs.delete_xattr(self.path, self.xattr)
 
     def test_delete_xattr_returns_true(self):
 
         self.response.status_code = http_client.OK
-        self.requests.put.return_value = self.response
-        with patch('pywebhdfs.webhdfs.requests', self.requests):
+        self.requests.return_value = self.response
+        with patch('requests.sessions.Session.put', self.requests):
             result = self.webhdfs.delete_xattr(self.path, self.xattr)
 
         self.assertTrue(result)
@@ -722,6 +797,64 @@ class WhenTestingCreateUri(unittest.TestCase):
                   op=op, key=mykey, val=myval, user=self.user_name)
         result = self.webhdfs._create_uri(path, op, mykey=myval)
         self.assertEqual(uri, result)
+
+
+class WhenTestingResolveHost(unittest.TestCase):
+
+    def setUp(self):
+        self.host = 'hostname'
+        self.port = '00000'
+        self.user_name = 'username'
+        self.path = 'user/hdfs'
+        self.timeout = None
+        self.webhdfs = PyWebHdfsClient(host=self.host, port=self.port,
+                                       user_name=self.user_name)
+
+        self.session = requests.Session()
+        self.data = '01011010'
+        self.headers = {'content-type': 'application/octet-stream'}
+
+        self.response = MagicMock()
+        self.response.status_code = http_client.TEMPORARY_REDIRECT
+        self.requests = MagicMock(return_value=self.response)
+
+    def test_method_is_called_with_correct_arguments(self):
+        uri = self.webhdfs._create_uri(self.path, 'CREATE').format(host=self.host)
+        with patch('requests.sessions.Session.put', self.requests):
+            result = self.webhdfs._resolve_host(
+                self.session.put, True, self.path, 'CREATE')
+        self.assertTrue(result)
+        self.assertEqual(len(self.requests.mock_calls), 1)
+        self.requests.assert_called_with(uri, allow_redirects=True, timeout=self.timeout)
+
+    def test_retries_are_made_max_tries(self):
+        self.requests.side_effect = [
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            self.response]
+        with patch('requests.sessions.Session.put', self.requests):
+            result = self.webhdfs._resolve_host(
+                self.session.put, True, self.path, 'CREATE')
+        self.assertTrue(result)
+        self.assertEqual(len(self.requests.mock_calls), 3)
+
+    def test_retries_are_made_at_most_max_tries(self):
+        self.requests.side_effect = [
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            self.response]
+        with self.assertRaises(requests.exceptions.ConnectionError):
+            with patch('requests.sessions.Session.put', self.requests):
+                self.webhdfs._resolve_host(
+                    self.session.put, True, self.path, 'CREATE')
+
+    def test_non_requests_exceptions_bubble_up(self):
+        self.requests.side_effect = errors.FileNotFound
+        with self.assertRaises(errors.FileNotFound):
+            with patch('requests.sessions.Session.put', self.requests):
+                self.webhdfs._resolve_host(
+                    self.session.put, True, self.path, 'CREATE')
 
 
 class WhenTestingRaiseExceptions(unittest.TestCase):

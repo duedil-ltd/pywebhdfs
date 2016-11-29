@@ -1,5 +1,6 @@
 from six.moves import http_client
 import re
+from time import sleep
 
 import requests
 try:
@@ -20,7 +21,7 @@ class PyWebHdfsClient(object):
     """
 
     def __init__(self, host='localhost', port='50070', user_name=None,
-                 path_to_hosts=None, timeout=None,
+                 path_to_hosts=None, max_tries=3, timeout=None,
                  base_uri_pattern="http://{host}:{port}/webhdfs/v1/",
                  request_extra_opts={}):
         """
@@ -30,6 +31,7 @@ class PyWebHdfsClient(object):
         :param port: the port number for WebHDFS on the namenode
         :param user_name: WebHDFS user.name used for authentication
         :param path_to_hosts: mapping paths to hostnames for federation
+        :param max_tries: maximum number of retries
         :param timeout: timeout for the underlying HTTP request
         :param base_uri_pattern: format string for base URI
         :param request_extra_opts: dictionary of extra options to pass
@@ -48,7 +50,9 @@ class PyWebHdfsClient(object):
         self.host = host
         self.port = port
         self.user_name = user_name
+        self.max_tries = int(max_tries)
         self.timeout = timeout
+        self.session = requests.Session()
         self.path_to_hosts = path_to_hosts
         if self.path_to_hosts is None:
             self.path_to_hosts = [('.*', [self.host])]
@@ -90,34 +94,45 @@ class PyWebHdfsClient(object):
         >>>     hdfs.create_file(hdfs_path, data=file_data)
 
 
-        Note: The create_file function does not follow automatic redirects but
+        Note: The create_file function does not follows automatic redirects but
         instead uses a two step call to the API as required in the
         WebHDFS documentation
         """
 
         # make the initial CREATE call to the HDFS namenode
         optional_args = kwargs
+        tries = 0
 
-        init_response = self._resolve_host(requests.put, False,
-                                           path, operations.CREATE,
-                                           **optional_args)
-        if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
-            _raise_pywebhdfs_exception(
-                init_response.status_code, init_response.content)
+        while tries < self.max_tries:
+            init_response = self._resolve_host(self.session.put, False,
+                                               path, operations.CREATE,
+                                               **optional_args)
+            if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
+                _raise_pywebhdfs_exception(
+                    init_response.status_code, init_response.content)
 
-        # Get the address provided in the location header of the
-        # initial response from the namenode and make the CREATE request
-        # to the datanode
-        uri = init_response.headers['location']
-        response = requests.put(
-            uri, data=file_data,
-            headers={'content-type': 'application/octet-stream'},
-            **self.request_extra_opts)
+            uri = init_response.headers['location']
+            # Get the address provided in the location header of the
+            # initial response from the namenode and make the CREATE request
+            # to the datanode. If there is a failure here, we should make a new
+            # request to the namenode.
 
-        if not response.status_code == http_client.CREATED:
-            _raise_pywebhdfs_exception(response.status_code, response.content)
+            try:
+                response = self.session.put(
+                    uri, data=file_data,
+                    headers={'content-type': 'application/octet-stream'},
+                    **self.request_extra_opts)
 
-        return True
+                if not response.status_code == http_client.CREATED:
+                    _raise_pywebhdfs_exception(response.status_code, response.content)
+
+                return True
+            except requests.exceptions.RequestException, e:
+                tries += 1
+                last_error = e
+                sleep(2 ** tries)
+
+        raise last_error
 
     def append_file(self, path, file_data, **kwargs):
         """
@@ -154,28 +169,39 @@ class PyWebHdfsClient(object):
 
         # make the initial APPEND call to the HDFS namenode
         optional_args = kwargs
+        tries = 0
 
-        init_response = self._resolve_host(requests.post, False,
-                                           path, operations.APPEND,
-                                           **optional_args)
-        if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
-            _raise_pywebhdfs_exception(
-                init_response.status_code, init_response.content)
+        while tries < self.max_tries:
+            init_response = self._resolve_host(self.session.post, False,
+                                               path, operations.APPEND,
+                                               **optional_args)
+            if not init_response.status_code == http_client.TEMPORARY_REDIRECT:
+                _raise_pywebhdfs_exception(
+                    init_response.status_code, init_response.content)
 
-        # Get the address provided in the location header of the
-        # initial response from the namenode and make the APPEND request
-        # to the datanode
-        uri = init_response.headers['location']
-        response = requests.post(
-            uri, data=file_data,
-            headers={'content-type': 'application/octet-stream'},
-            **self.request_extra_opts
-        )
+            uri = init_response.headers['location']
 
-        if not response.status_code == http_client.OK:
-            _raise_pywebhdfs_exception(response.status_code, response.content)
+            # Get the address provided in the location header of the
+            # initial response from the namenode and make the APPEND request
+            # to the datanode. If there is a failure here, we should make a new
+            # request to the namenode.
+            try:
+                response = self.session.post(
+                    uri, data=file_data,
+                    headers={'content-type': 'application/octet-stream'},
+                    **self.request_extra_opts
+                )
 
-        return True
+                if not response.status_code == http_client.OK:
+                    _raise_pywebhdfs_exception(response.status_code, response.content)
+
+                return True
+            except requests.exceptions.RequestException, e:
+                tries += 1
+                last_error = e
+                sleep(2 ** tries)
+
+        raise last_error
 
     def read_file(self, path, **kwargs):
         """
@@ -204,13 +230,52 @@ class PyWebHdfsClient(object):
 
         optional_args = kwargs
 
-        response = self._resolve_host(requests.get, True,
+        # The retry logic added to self._resolve_host is enough in this case,
+        # as we are following redirects.
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.OPEN,
                                       **optional_args)
         if not response.status_code == http_client.OK:
             _raise_pywebhdfs_exception(response.status_code, response.content)
 
         return response.content
+
+    def stream_file(self, path, chunk_size=1024, **kwargs):
+        """
+        Reads from a file on HDFS  and returns the content
+
+        :param path: the HDFS file path
+
+        The function wraps the WebHDFS REST call:
+
+        GET http://<HOST>:<PORT>/webhdfs/v1/<PATH>?op=OPEN
+
+        [&offset=<LONG>][&length=<LONG>][&buffersize=<INT>]
+
+        Note: this function follows automatic redirects
+
+        Example:
+
+        >>> hdfs = PyWebHdfsClient(host='host',port='50070', user_name='hdfs')
+        >>> my_file = 'user/hdfs/data/myfile.txt'
+        >>> hdfs.read_file(my_file)
+        01010101010101010101010101010101
+        01010101010101010101010101010101
+        01010101010101010101010101010101
+        01010101010101010101010101010101
+        """
+
+        optional_args = kwargs
+
+        response = self._resolve_host(requests.get, True,
+                                      path, operations.OPEN, stream=True,
+                                      **optional_args)
+        if not response.status_code == http_client.OK:
+            _raise_pywebhdfs_exception(response.status_code, response.content)
+
+        for chunk in response.iter_content(chunk_size):
+            if chunk:
+                yield chunk
 
     def make_dir(self, path, **kwargs):
         """
@@ -237,7 +302,7 @@ class PyWebHdfsClient(object):
 
         optional_args = kwargs
 
-        response = self._resolve_host(requests.put, True,
+        response = self._resolve_host(self.session.put, True,
                                       path, operations.MKDIRS,
                                       **optional_args)
         if not response.status_code == http_client.OK:
@@ -266,7 +331,7 @@ class PyWebHdfsClient(object):
 
         destination_path = '/' + destination_path.lstrip('/')
 
-        response = self._resolve_host(requests.put, True,
+        response = self._resolve_host(self.session.put, True,
                                       path, operations.RENAME,
                                       destination=destination_path)
         if not response.status_code == http_client.OK:
@@ -297,7 +362,7 @@ class PyWebHdfsClient(object):
         >>> hdfs.delete_file_dir(my_file, recursive=True)
         """
 
-        response = self._resolve_host(requests.delete, True,
+        response = self._resolve_host(self.session.delete, True,
                                       path, operations.DELETE,
                                       recursive=recursive)
         if not response.status_code == http_client.OK:
@@ -355,7 +420,7 @@ class PyWebHdfsClient(object):
         }
         """
 
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.GETFILESTATUS)
         if not response.status_code == http_client.OK:
             _raise_pywebhdfs_exception(response.status_code, response.content)
@@ -390,7 +455,7 @@ class PyWebHdfsClient(object):
         }
         """
 
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.GETCONTENTSUMMARY)
         if not response.status_code == http_client.OK:
             _raise_pywebhdfs_exception(response.status_code, response.content)
@@ -421,7 +486,7 @@ class PyWebHdfsClient(object):
         }
         """
 
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.GETFILECHECKSUM)
         if not response.status_code == http_client.OK:
             _raise_pywebhdfs_exception(response.status_code, response.content)
@@ -476,7 +541,7 @@ class PyWebHdfsClient(object):
 
         """
 
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.LISTSTATUS)
         if not response.status_code == http_client.OK:
             _raise_pywebhdfs_exception(response.status_code, response.content)
@@ -502,7 +567,7 @@ class PyWebHdfsClient(object):
         >>> hdfs.exists_file_dir(my_file)
         True
         """
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.GETFILESTATUS)
         if response.status_code == http_client.OK:
             return True
@@ -540,7 +605,7 @@ class PyWebHdfsClient(object):
         if xattr:
             kwd_params['xattr.name'] = xattr
 
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.GETXATTRS,
                                       **kwd_params)
 
@@ -577,7 +642,7 @@ class PyWebHdfsClient(object):
         else:
             kwd_params['flag'] = "CREATE"
 
-        response = self._resolve_host(requests.put, True,
+        response = self._resolve_host(self.session.put, True,
                                       path, operations.SETXATTR,
                                       **kwd_params)
 
@@ -603,7 +668,7 @@ class PyWebHdfsClient(object):
             "XAttrNames": "[\"XATTRNAME1\",\"XATTRNAME2\",\"XATTRNAME3\"]"
         }
         """
-        response = self._resolve_host(requests.get, True,
+        response = self._resolve_host(self.session.get, True,
                                       path, operations.LISTXATTRS)
 
         if not response.status_code == http_client.OK:
@@ -632,7 +697,7 @@ class PyWebHdfsClient(object):
             'xattr.name': xattr
         }
 
-        response = self._resolve_host(requests.put, True,
+        response = self._resolve_host(self.session.put, True,
                                       path, operations.REMOVEXATTR,
                                       **kwd_params)
 
@@ -696,15 +761,30 @@ class PyWebHdfsClient(object):
         """
         uri_without_host = self._create_uri(path, operation, **kwargs)
         hosts = self._resolve_federation(path)
-        for host in hosts:
-            uri = uri_without_host.format(host=host)
-            response = req_func(uri, allow_redirects=allow_redirect,
-                                timeout=self.timeout,
-                                **self.request_extra_opts)
 
-            if not _is_standby_exception(response):
-                _move_active_host_to_head(hosts, host)
-                return response
+        for host in hosts:
+            tries = 0
+            uri = uri_without_host.format(host=host)
+            while tries < self.max_tries:
+                try:
+                    # When allow_redirects is True, control flow doesn't leave
+                    # this branch, so a failure will mean a new request to the
+                    # namenode, as required.
+                    response = req_func(uri, allow_redirects=allow_redirect,
+                                        timeout=self.timeout,
+                                        **self.request_extra_opts)
+                    last_error = None
+                    if not _is_standby_exception(response):
+                        _move_active_host_to_head(hosts, host)
+                        return response
+                except requests.exceptions.RequestException, e:
+                    last_error = e
+                    tries += 1
+                    sleep(2 ** tries)
+
+        if last_error:
+            raise last_error
+
         raise errors.ActiveHostNotFound(msg="Could not find active host")
 
 
